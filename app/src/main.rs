@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 #![cfg_attr(test, windows_subsystem = "console")]
 
+mod background;
 mod cli;
 #[cfg(target_os = "windows")]
 mod console;
@@ -49,7 +50,8 @@ fn main() {
 #[cfg(target_os = "windows")]
 fn run_windows() {
     console::attach();
-    if init().is_err() {
+    if let Err(error) = init() {
+        eprintln!("Application startup failed: {error:?}");
         std::process::exit(2);
     }
     console::free();
@@ -85,6 +87,7 @@ fn init() -> Result<()> {
             start_ui(output_type, hide_window);
             Ok(())
         }
+        GuiCommand::BackgroundEffect(profile) => background::run(profile).map_err(|error| eyre!(error)),
         GuiCommand::Exit => Ok(()),
     }
 }

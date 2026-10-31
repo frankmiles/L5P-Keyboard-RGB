@@ -1,7 +1,7 @@
 use crate::enums::{Direction, Effects, Message};
 
 use crossbeam_channel::{Receiver, Sender};
-use effects::{ambient, christmas, disco, fade, lightning, ripple, swipe, temperature};
+use effects::{ambient, christmas, disco, expanded, fade, lightning, ripple, swipe, temperature};
 use error_stack::{Result, ResultExt};
 use legion_input::Input;
 use legion_rgb_driver::{BaseEffects, Keyboard, SPEED_RANGE};
@@ -210,6 +210,26 @@ impl Inner {
             Effects::Fade => fade::play(self, profile),
             Effects::Temperature => temperature::play(self),
             Effects::Ripple => ripple::play(self, profile),
+            Effects::Spectrum
+            | Effects::MatrixRain
+            | Effects::ReactiveTyping
+            | Effects::Pulse
+            | Effects::Aurora
+            | Effects::SnakeTrail
+            | Effects::RadarSweep
+            | Effects::Fire
+            | Effects::Starfield
+            | Effects::Marquee
+            | Effects::BouncingBall
+            | Effects::LaserBeamSweep
+            | Effects::DualColorSplit
+            | Effects::NeonSineWave
+            | Effects::RippleBurst
+            | Effects::StrobeFlash
+            | Effects::TypingBloom
+            | Effects::TypingWave
+            | Effects::TypingStudio { .. }
+            | Effects::AudioVisualizer { .. } => expanded::play(self, profile, profile.effect, rng),
         }
     }
 

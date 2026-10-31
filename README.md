@@ -44,18 +44,17 @@ You may also download pre-compiled versions from [here](https://github.com/4JX/L
 
 ## Available effects
 
-**All stock effects:** Static, Breath, Smooth, LeftWave, RightWave.
+For a complete, standalone architecture and behavior reference, see [technical-spec-detail.md](./technical-spec-detail.md).
 
-**Custom effects:**
+**Built-in effects:** Static, Breath, Smooth, Wave, Lightning, AmbientLight, SmoothWave, Swipe, Disco, Christmas, Fade, Temperature, Ripple, Spectrum, MatrixRain, ReactiveTyping, Pulse, Aurora, SnakeTrail, RadarSweep, Fire, Starfield, Marquee, BouncingBall, LaserBeamSweep, DualColorSplit, NeonSineWave, RippleBurst, StrobeFlash, TypingBloom, TypingWave, and AudioVisualizer.
 
-- **Lightning:** Adds a little _spark_.
-- **AmbientLight:** Reacts to content on your screen.
-- **Smooth(Left/Right)Wave:** An implementation of the classic wave effect.
-- **(Left/Right)Swipe:** Transitions the selected colors from side to side, useful for custom waves.
-- **Disco:** A portable dance floor!
-- **Christmas:** Even keyboards can get festive.
-- **Fade:** Turns off the keyboard lights after a period of inactivity.
-- **Temperature:** Displays a gradient based on the current CPU temperature. (Linux only)
+The expanded effects include a rotating rainbow (Spectrum), falling green lights (MatrixRain), key-reactive color (ReactiveTyping), a double-beat pulse, drifting aurora colors, a moving snake trail, radar and laser sweeps, flickering fire, stars and shooting stars, a scrolling marquee, a bouncing light, split complementary colors, a neon wave, expanding ripples, and alternating strobe flashes. TypingBloom produces a bright per-zone typing burst, while TypingWave sends a fading wave across neighboring zones. ReactiveTyping, TypingBloom, and TypingWave use a dim generated-color animation when keyboard input is unavailable.
+
+TypingStudio adds 15 selectable typing styles: Neon Rain, Heartbeat, Prism, Meteor, Ember, Ripple, Comet, Ghost Trail, Zone Bounce, Starlight, Laser, Rainbow Spark, Cascade, Aurora, and Staccato. They react to key-down events, use the existing physical key-to-zone map, and apply distinct color, decay, pulse, and trail patterns.
+
+AudioVisualizer offers 15 selectable styles: VU Meter, Beat Pulse, Waveform, Bass Drop, Spectrum Bars, Vocal Glow, Treble Spark, Beat Strobe, Equalizer, Sound Ripple, Dance Floor, Aurora, Siren, Fire Beat, and Comet Trail. On Windows, choose System to analyze the default playback device or Microphone to analyze the default input device. The visualizer analyzes short audio buffers in memory for bass, midrange, treble, and voice-band energy and beat-like transients. It does not record or store audio. Waveform and Comet Trail use recent audio history rather than frequency-band FFT. With no signal, the visualizer dims to black instead of remaining lit. A small Random button beside the global color control applies four different, vivid colors to the zone palettes.
+
+On Windows, **Apply until shutdown** at the bottom of the window moves the selected built-in effect to a local background process. It keeps running after the GUI closes and can be updated by reopening the app; it is not installed as a Windows service and does not auto-start after a reboot. Typing and audio styles continue to use their selected input sources. Custom JSON effects remain app-session effects and are not eligible for this button.
 
 ### Creating your own effects
 
@@ -67,9 +66,24 @@ The best way to add a new effect is to directly edit the source code, as it allo
 
 ```json
 {
+  "name": "MyEffect",
   "effect_steps": [
-    {"rgb_array": [0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0], "step_type": "Set", "brightness": 1, "steps": 100, "delay_between_steps": 100, "sleep": 100},
-    {"rgb_array": [0, 100, 0, 0, 0, 200, 0, 0, 200, 200, 0, 0], "step_type": "Transition", "brightness": 1, "steps": 100, "delay_between_steps": 100, "sleep": 100}
+    {
+      "rgb_array": [0, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0],
+      "step_type": "Set",
+      "brightness": 1,
+      "steps": 50,
+      "delay_between_steps": 20,
+      "sleep": 100
+    },
+    {
+      "rgb_array": [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 255],
+      "step_type": "Transition",
+      "brightness": 2,
+      "steps": 80,
+      "delay_between_steps": 15,
+      "sleep": 120
+    }
   ],
   "should_loop": true
 }
@@ -77,8 +91,9 @@ The best way to add a new effect is to directly edit the source code, as it allo
 
 #### File sections
 
+- **name:** An optional name for the custom effect.
 - **effect_steps:** Contains the different _"steps"_ the effect will go through.
-  - **rgb_array:** An array describing the colours to use in the `[r,g,b,r,g,b...]` format.
+  - **rgb_array:** Exactly 12 values describing the 4 zones in the `[r,g,b,r,g,b,r,g,b,r,g,b]` format.
   - **step_type:** The type of step to use. You may instantly swap the colours with `Set` or smoothly transition to them with `Transition`.
   - **brightness:** The brightness of the step, can be `1` (low) or `2` (high).
   - **steps:** To smoothly transition between colours, the keyboard LEDs are set at small intervals until they reach the desired color. This controls the number of them.

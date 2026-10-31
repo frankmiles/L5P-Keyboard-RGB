@@ -53,11 +53,14 @@ thiserror = "2.0.12"
 single-instance = "0.3.3"
 open = "5.3.2"
 error-stack = "0.5.0"
-winapi = { version = "0.3.9", features = ["consoleapi", "wincon", "processenv"] }
+winapi = { version = "0.3.9", features = ["consoleapi", "errhandlingapi", "fileapi", "handleapi", "namedpipeapi", "processenv", "winbase", "wincon"] }
 
 # Tray icon
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon = { version = "0.20.1", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi = "0.26"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-icon = { version = "0.20.1", default-features = false }

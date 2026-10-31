@@ -37,6 +37,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
+    #[arg(long = "background-effect", hide = true)]
+    background_effect: Option<String>,
+
     /// Start the GUI
     #[arg(short, long, default_value_t = false)]
     gui: bool,
@@ -117,6 +120,9 @@ pub enum CliOutput {
     /// Start the UI
     Gui { hide_window: bool, output_type: OutputType },
 
+    /// Run an applied effect in the background without opening the UI
+    BackgroundEffect(Profile),
+
     /// CLI arguments were passed
     Cli(OutputType),
 }
@@ -124,6 +130,9 @@ pub enum CliOutput {
 pub enum GuiCommand {
     /// Start the UI
     Start { hide_window: bool, output_type: OutputType },
+
+    /// Run an applied effect in the background without opening the UI
+    BackgroundEffect(Profile),
 
     /// Close the program as the CLI was invoked
     Exit,
@@ -152,6 +161,7 @@ pub fn try_cli() -> Result<GuiCommand, CliError> {
             }
             Ok(GuiCommand::Start { hide_window, output_type })
         }
+        CliOutput::BackgroundEffect(profile) => Ok(GuiCommand::BackgroundEffect(profile)),
         CliOutput::Cli(output_type) => handle_cli_output(output_type),
     }
 }
@@ -186,6 +196,15 @@ fn handle_cli_output(output_type: OutputType) -> Result<GuiCommand, CliError> {
 
 fn parse_cli() -> Result<CliOutput, CliError> {
     let cli = Cli::parse();
+
+    if let Some(serialized_profile) = cli.background_effect {
+        if cli.command.is_some() || cli.gui || cli.hide_window || serialized_profile.len() > 4096 {
+            return Err(CliError.into());
+        }
+
+        let profile = serde_json::from_str(&serialized_profile).change_context(CliError)?;
+        return Ok(CliOutput::BackgroundEffect(profile));
+    }
 
     if let Some(subcommand) = cli.command {
         match subcommand {
@@ -270,4 +289,15 @@ fn parse_cli() -> Result<CliOutput, CliError> {
         hide_window: cli.hide_window,
         output_type: OutputType::NoArgs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn background_helper_argument_matches_the_launcher_flag() {
+        assert!(Cli::try_parse_from(["legion-kb-rgb", "--background-effect", "{}"]).is_ok());
+    }
 }

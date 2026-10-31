@@ -15,11 +15,14 @@ use eframe::{
 };
 
 use egui_notify::Toasts;
-use legion_input::{EventKind, Key};
+use legion_input::{EventKind, Input, Key};
+use rand::Rng;
+use single_instance::SingleInstance;
 use strum::IntoEnumIterator;
 use tray_icon::menu::MenuEvent;
 
 use crate::{
+    background::BackgroundController,
     cli::OutputType,
     enums::Effects,
     manager::{self, custom_effect::CustomEffect, profile::Profile, show_effect_ui, EffectManager, ManagerCreationError},
@@ -36,6 +39,7 @@ mod saved_items;
 pub mod style;
 
 pub struct App {
+    _gui_instance: SingleInstance,
     instance_not_unique: bool,
     gui_tx: crossbeam_channel::Sender<GuiMessage>,
     gui_rx: crossbeam_channel::Receiver<GuiMessage>,
@@ -44,6 +48,9 @@ pub struct App {
     visible: Arc<AtomicBool>,
 
     manager: Option<EffectManager>,
+    background: Option<BackgroundController>,
+    startup_error: Option<String>,
+    input: Option<Input>,
     state_changed: bool,
     loaded_effect: LoadedEffect,
     current_profile: Profile,
@@ -106,22 +113,40 @@ impl App {
     pub fn new(output: OutputType, has_tray: Arc<AtomicBool>, visible: Arc<AtomicBool>) -> Self {
         let (gui_tx, gui_rx) = crossbeam_channel::unbounded::<GuiMessage>();
 
-        let manager_result = EffectManager::new(manager::OperationMode::Gui);
-
-        let instance_not_unique = if let Err(err) = &manager_result {
-            &ManagerCreationError::InstanceAlreadyRunning == err.current_context()
+        let gui_instance = SingleInstance::new(concat!(env!("CARGO_PKG_NAME"), "-gui")).unwrap();
+        let (manager, background, instance_not_unique, startup_error) = if !gui_instance.is_single() {
+            (None, None, true, None)
         } else {
-            false
+            match EffectManager::new(manager::OperationMode::Gui) {
+                Ok(manager) => (Some(manager), None, false, None),
+                Err(error) if &ManagerCreationError::InstanceAlreadyRunning == error.current_context() => match BackgroundController::connect_existing() {
+                    Ok(Some(background)) => (None, Some(background), false, None),
+                    Ok(None) => (None, None, true, None),
+                    Err(error) => (None, None, true, Some(error)),
+                },
+                Err(_) => (None, None, false, None),
+            }
         };
 
-        let manager = manager_result.ok();
+        let input = manager.as_ref().and_then(EffectManager::input).cloned().or_else(|| background.as_ref().and_then(|_| Input::new().ok()));
+        let manager_running = manager.is_some();
 
         let settings: Settings = Settings::load();
-        let Settings { current_profile, profiles, effects } = settings;
+        let Settings {
+            mut current_profile,
+            profiles,
+            effects,
+        } = settings;
+        if let Some(background) = background.as_ref() {
+            let saved_name = current_profile.name.clone();
+            current_profile = background.profile().clone();
+            current_profile.name = saved_name;
+        }
 
         let gui_tx_c = gui_tx.clone();
         // Default app state
         let mut app = Self {
+            _gui_instance: gui_instance,
             instance_not_unique,
             gui_tx,
             gui_rx,
@@ -130,8 +155,10 @@ impl App {
             visible,
 
             manager,
-            // Default to true for an instant update on launch
-            state_changed: true,
+            background,
+            startup_error,
+            input,
+            state_changed: manager_running,
             loaded_effect: LoadedEffect::default(),
             current_profile,
 
@@ -144,8 +171,14 @@ impl App {
 
         // Update the state according to the option chosen by the user
         match output {
-            OutputType::Profile(profile) => app.current_profile = profile,
-            OutputType::Custom(effect) => app.loaded_effect = LoadedEffect::queued(effect),
+            OutputType::Profile(profile) => {
+                app.current_profile = profile;
+                app.state_changed = true;
+            }
+            OutputType::Custom(effect) => {
+                app.loaded_effect = LoadedEffect::queued(effect);
+                app.state_changed = true;
+            }
             OutputType::NoArgs => {}
             OutputType::Exit => unreachable!("Exiting the app supersedes starting the GUI"),
         }
@@ -180,7 +213,7 @@ impl App {
 
         let ctx = cc.egui_ctx.clone();
         let gui_tx_c = self.gui_tx.clone();
-        if let Some(events) = self.manager.as_ref().and_then(EffectManager::input).map(|input| input.subscribe()) {
+        if let Some(events) = self.input.as_ref().map(Input::subscribe) {
             thread::spawn(move || {
                 let mut held = HashSet::new();
                 let mut active = false;
@@ -223,6 +256,9 @@ impl eframe::App for App {
 
         // Show active toast messages
         self.toasts.show(ctx);
+        if let Some(error) = self.startup_error.take() {
+            self.toasts.error(error).duration(Some(std::time::Duration::from_secs(8))).closable(true);
+        }
 
         if *DENY_HIDING && !self.visible.load(Ordering::SeqCst) {
             self.visible.store(true, Ordering::SeqCst);
@@ -235,7 +271,7 @@ impl eframe::App for App {
             self.exit_app();
         }
 
-        if !self.instance_not_unique && self.manager.is_none() && modals::manager_error(ctx) {
+        if !self.instance_not_unique && self.manager.is_none() && self.background.is_none() && modals::manager_error(ctx) {
             self.exit_app();
         }
 
@@ -243,6 +279,24 @@ impl eframe::App for App {
             self.menu_bar
                 .show(ctx, ui, &mut self.current_profile, &mut self.loaded_effect, &mut self.state_changed, &mut self.toasts);
         });
+
+        let mut apply_clicked = false;
+        TopBottomPanel::bottom("apply-panel").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if self.background.is_some() {
+                    ui.label("Applied effect runs until Windows shuts down.");
+                } else {
+                    ui.label("Apply the selected built-in effect to keep it running after closing the app.");
+                }
+                apply_clicked = ui
+                    .add_enabled(self.loaded_effect.is_none() && cfg!(target_os = "windows"), eframe::egui::Button::new("Apply until shutdown"))
+                    .on_hover_text("Starts a local background process. It does not start automatically after reboot.")
+                    .clicked();
+            });
+        });
+        if apply_clicked {
+            self.apply_background_effect();
+        }
 
         CentralPanel::default()
             .frame(Frame::new().inner_margin(self.theme.spacing.large).fill(Color32::from_gray(26)))
@@ -337,12 +391,23 @@ impl App {
                     });
 
                     ui.style_mut().spacing.interact_size = Vec2::new(response.response.rect.width(), 30.0);
-                    if ui.color_edit_button_srgb(&mut self.global_rgb).changed() {
-                        for i in 0..4 {
-                            self.current_profile.rgb_zones[i].rgb = self.global_rgb;
+                    ui.horizontal(|ui| {
+                        if ui.color_edit_button_srgb(&mut self.global_rgb).changed() {
+                            for i in 0..4 {
+                                self.current_profile.rgb_zones[i].rgb = self.global_rgb;
+                            }
+                            self.state_changed = true;
                         }
-                        self.state_changed = true;
-                    }
+
+                        if ui.small_button("Random").on_hover_text("Apply a different vivid random color to each zone").clicked() {
+                            let palette = random_vivid_palette();
+                            self.global_rgb = palette[0];
+                            for (zone, color) in self.current_profile.rgb_zones.iter_mut().zip(palette) {
+                                zone.rgb = color;
+                            }
+                            self.state_changed = true;
+                        }
+                    });
 
                     response.response
                 });
@@ -391,18 +456,116 @@ impl App {
     }
 
     fn update_state(&mut self) {
-        if let Some(manager) = self.manager.as_mut() {
-            if self.loaded_effect.is_none() {
+        if self.loaded_effect.is_none() {
+            if let Some(Err(error)) = self.background.as_mut().map(|background| background.set_profile(&self.current_profile)) {
+                self.toasts
+                    .error(format!("Could not update the applied effect: {error}"))
+                    .duration(Some(std::time::Duration::from_secs(8)))
+                    .closable(true);
+                match EffectManager::new(manager::OperationMode::Gui) {
+                    Ok(mut manager) => {
+                        manager.set_profile(self.current_profile.clone());
+                        self.manager = Some(manager);
+                        self.background = None;
+                    }
+                    Err(manager_error) => {
+                        self.toasts
+                            .error(format!("The background effect may still own the keyboard: {manager_error}"))
+                            .duration(Some(std::time::Duration::from_secs(8)))
+                            .closable(true);
+                    }
+                }
+            } else if let Some(manager) = self.manager.as_mut() {
                 manager.set_profile(self.current_profile.clone());
-            } else if self.loaded_effect.is_queued() {
-                self.loaded_effect.state = State::Playing;
+            }
+        } else if self.loaded_effect.is_queued() {
+            let effect = self.loaded_effect.effect.clone();
+            let mut can_start_custom = true;
+            if let Some(background) = self.background.as_mut() {
+                if let Err(error) = background.stop() {
+                    self.toasts
+                        .error(format!("Could not stop the applied built-in effect: {error}"))
+                        .duration(Some(std::time::Duration::from_secs(8)))
+                        .closable(true);
+                    can_start_custom = false;
+                } else {
+                    self.background = None;
+                }
+            }
 
-                let effect = self.loaded_effect.effect.clone();
-                manager.custom_effect(effect);
+            if can_start_custom {
+                if self.manager.is_none() {
+                    match EffectManager::new(manager::OperationMode::Gui) {
+                        Ok(manager) => self.manager = Some(manager),
+                        Err(error) => {
+                            self.toasts
+                                .error(format!("Could not start the custom effect: {error}"))
+                                .duration(Some(std::time::Duration::from_secs(8)))
+                                .closable(true);
+                        }
+                    }
+                }
+                if let Some(manager) = self.manager.as_ref() {
+                    manager.custom_effect(effect);
+                    self.loaded_effect.state = State::Playing;
+                }
             }
         }
 
         self.state_changed = false;
+    }
+
+    fn apply_background_effect(&mut self) {
+        let profile = self.current_profile.clone();
+        if let Some(background) = self.background.as_mut() {
+            match background.set_profile(&profile) {
+                Ok(()) => {
+                    self.toasts
+                        .success("Effect is active in the background until Windows shuts down.")
+                        .duration(Some(std::time::Duration::from_secs(5)))
+                        .closable(true);
+                }
+                Err(error) => {
+                    self.toasts
+                        .error(format!("Could not apply the selected effect: {error}"))
+                        .duration(Some(std::time::Duration::from_secs(8)))
+                        .closable(true);
+                }
+            }
+            return;
+        }
+
+        if let Some(manager) = self.manager.take() {
+            manager.shutdown();
+        }
+
+        match BackgroundController::launch(&profile) {
+            Ok(background) => {
+                self.background = Some(background);
+                self.toasts
+                    .success("Effect is active in the background until Windows shuts down.")
+                    .duration(Some(std::time::Duration::from_secs(5)))
+                    .closable(true);
+            }
+            Err(error) => {
+                self.toasts
+                    .error(format!("Could not apply the selected effect in the background: {error}"))
+                    .duration(Some(std::time::Duration::from_secs(8)))
+                    .closable(true);
+                match EffectManager::new(manager::OperationMode::Gui) {
+                    Ok(mut manager) => {
+                        manager.set_profile(profile);
+                        self.manager = Some(manager);
+                    }
+                    Err(error) => {
+                        self.toasts
+                            .error(format!("Could not resume the effect in the app: {error}"))
+                            .duration(Some(std::time::Duration::from_secs(8)))
+                            .closable(true);
+                    }
+                }
+            }
+        }
     }
 
     fn handle_close_request(&mut self, ctx: &Context) {
@@ -412,6 +575,44 @@ impl App {
                 ctx.send_viewport_cmd(ViewportCommand::Visible(false));
             } else {
                 // Close normally
+            }
+        }
+    }
+}
+
+fn random_vivid_palette() -> [[u8; 3]; 4] {
+    let mut rng = rand::rng();
+    let start_hue = rng.random_range(0..360);
+    std::array::from_fn(|zone| hsv_to_rgb(((start_hue + zone * 90) % 360) as f32 / 360.0))
+}
+
+fn hsv_to_rgb(hue: f32) -> [u8; 3] {
+    let sector = hue.rem_euclid(1.0) * 6.0;
+    let rising = (sector.fract() * 255.0).round() as u8;
+    let falling = 255 - rising;
+
+    match sector as u8 {
+        0 => [255, rising, 0],
+        1 => [falling, 255, 0],
+        2 => [0, 255, rising],
+        3 => [0, falling, 255],
+        4 => [rising, 0, 255],
+        _ => [255, 0, falling],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::random_vivid_palette;
+
+    #[test]
+    fn random_palette_has_four_distinct_colors() {
+        for _ in 0..32 {
+            let palette = random_vivid_palette();
+            for first in 0..palette.len() {
+                for second in (first + 1)..palette.len() {
+                    assert_ne!(palette[first], palette[second]);
+                }
             }
         }
     }
